@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <link rel="manifest" href="manifest.json">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Firebase 推送通知演示 (最新版本)</title>
+    <style>
+        body {
+            font-family: 'Microsoft JhengHei', '微軟正黑體', sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        button {
+            padding: 10px 15px;
+            background-color: #4285F4;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #3367D6;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        #tokenInfo, #messageDisplay {
+            background-color: #f5f5f5;
+            padding: 15px;
+            border-radius: 4px;
+            word-break: break-all;
+        }
+        .broadcast-container {
+            margin-top: 20px;
+            border-top: 1px solid #ddd;
+            padding-top: 20px;
+        }
+        input, textarea {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .notification {
+            background-color: #e8f5e9;
+            border-left: 4px solid #4CAF50;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+        .error {
+            color: #d32f2f;
+            background-color: #ffebee;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .success {
+            color: #388e3c;
+            background-color: #e8f5e9;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .log-container {
+            margin-top: 20px;
+            border: 1px solid #ddd;
+            padding: 10px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 14px;
+            background-color: #f8f9fa;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>Firebase 推送通知系統 (最新版本)</h1>
+
+    <div>
+        <button id="requestPermission">請求通知權限</button>
+        <button id="getTokenBtn">獲取推送令牌</button>
+        <button id="deleteTokenBtn" disabled>刪除令牌</button>
+    </div>
+
+    <div id="tokenInfo">請先請求通知權限並獲取令牌...</div>
+
+    <div id="statusUpdate" style="display: none;"></div>
+
+    <div id="messageDisplay">
+        <h3>接收到的消息：</h3>
+        <div id="messages"></div>
+    </div>
+
+    <div class="broadcast-container">
+        <h2>發送廣播消息 (模擬)</h2>
+        <p>注意：真實場景中，廣播消息應由後端服務發送</p>
+
+        <div>
+            <label for="title">標題：</label>
+            <input type="text" id="title" placeholder="輸入通知標題">
+        </div>
+
+        <div>
+            <label for="body">內容：</label>
+            <textarea id="body" placeholder="輸入通知內容"></textarea>
+        </div>
+
+        <div>
+            <label for="targetToken">目標令牌 (可選)：</label>
+            <input type="text" id="targetToken" placeholder="留空則使用當前設備令牌">
+        </div>
+
+        <button id="sendMessage">模擬發送消息</button>
+    </div>
+
+    <div class="log-container">
+        <h3>運行日誌：</h3>
+        <div id="logs"></div>
+    </div>
+</div>
+
+<!-- 引入 Firebase 相關模組 (最新版本) -->
+<script type="module">
+    // 導入 Firebase 必要模組
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.4.0/firebase-app.js";
+    import {
+        getMessaging,
+        getToken,
+        onMessage,
+        deleteToken,
+        isSupported
+    } from 'https://www.gstatic.com/firebasejs/11.4.0/firebase-messaging.js';
+
+    // 日誌功能
+    const logContainer = document.getElementById('logs');
+    function log(message, type = 'info') {
+        const logEntry = document.createElement('div');
+        logEntry.className = type;
+        const timestamp = new Date().toLocaleTimeString();
+        logEntry.textContent = `[${timestamp}] ${message}`;
+        logContainer.appendChild(logEntry);
+        logContainer.scrollTop = logContainer.scrollHeight;
+        console.log(`[${type}] ${message}`);
+    }
+
+    // 顯示狀態訊息
+    function showStatus(message, isError = false) {
+        const statusElement = document.getElementById('statusUpdate');
+        statusElement.textContent = message;
+        statusElement.className = isError ? 'error' : 'success';
+        statusElement.style.display = 'block';
+        setTimeout(() => {
+            statusElement.style.display = 'none';
+        }, 5000);
+    }
+
+    // Firebase 設定檔
+    const firebaseConfig = {
+        apiKey: "AIzaSyAlLoT-3L_cDiqgnTjWKy_5KpgqXM2BAM0",
+        authDomain: "gsweb-app.firebaseapp.com",
+        projectId: "gsweb-app",
+        storageBucket: "gsweb-app.firebasestorage.app",
+        messagingSenderId: "975280210572",
+        appId: "1:975280210572:web:911dc6c4cafe25a6d5f1a9"
+    };
+
+    // 初始化 Firebase
+    const app = initializeApp(firebaseConfig);
+    let messaging = null;
+    let currentToken = null;
+
+    // 取得元素參考
+    const requestPermissionBtn = document.getElementById('requestPermission');
+    const getTokenBtn = document.getElementById('getTokenBtn');
+    const deleteTokenBtn = document.getElementById('deleteTokenBtn');
+    const tokenInfoElement = document.getElementById('tokenInfo');
+    const messagesElement = document.getElementById('messages');
+    const sendMessageBtn = document.getElementById('sendMessage');
+
+    // 初始化 Firebase Messaging
+    async function initializeMessaging() {
+        try {
+            // 檢查瀏覽器是否支援 FCM
+            if (!(await isSupported())) {
+                log('此瀏覽器不支援 Firebase Cloud Messaging', 'error');
+                showStatus('錯誤：此瀏覽器不支援 Firebase Cloud Messaging', true);
+                return false;
+            }
+
+            messaging = getMessaging(app);
+            log('Firebase Messaging 初始化成功', 'info');
+
+            // 設置消息接收處理
+            setupMessageListener();
+
+            return true;
+        } catch (error) {
+            log(`Firebase Messaging 初始化失敗: ${error.message}`, 'error');
+            showStatus(`初始化失敗: ${error.message}`, true);
+            return false;
+        }
+    }
+
+    // 設置消息接收監聽
+    function setupMessageListener() {
+        if (!messaging) return;
+
+        // 監聽前景消息
+        onMessage(messaging, (payload) => {
+            log(`接收到前景消息: ${payload.notification?.title || '未命名消息'}`, 'info');
+
+            // 在頁面顯示收到的消息
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'notification';
+
+            const messageData = payload.notification || payload.data || {};
+            const title = messageData.title || '未指定標題';
+            const body = messageData.body || '未指定內容';
+
+            messageDiv.innerHTML = `
+                    <h4>${title}</h4>
+                    <p>${body}</p>
+                    <small>收到時間: ${new Date().toLocaleString()}</small>
+                `;
+
+            messagesElement.prepend(messageDiv);
+
+            // 顯示瀏覽器通知（即使應用已經開啟）
+            if (Notification.permission === 'granted') {
+                const notificationOptions = {
+                    body: body,
+                    icon: '/favicon.ico'  // 可替換為您的應用圖標
+                };
+                new Notification(title, notificationOptions);
+            }
+        });
+
+        log('消息監聽器設置完成', 'info');
+    }
+
+    // 請求通知權限
+    async function requestNotificationPermission() {
+        try {
+            log('正在請求通知權限...', 'info');
+            const permission = await Notification.requestPermission();
+
+            if (permission === 'granted') {
+                log('通知權限已獲取', 'info');
+                showStatus('通知權限已獲取！');
+                tokenInfoElement.innerHTML = '通知權限已獲取！您現在可以點擊「獲取推送令牌」按鈕。';
+                requestPermissionBtn.disabled = true;
+                return true;
+            } else {
+                log(`通知權限被拒絕: ${permission}`, 'error');
+                showStatus(`通知權限被拒絕: ${permission}。請在瀏覽器設定中啟用通知權限。`, true);
+                tokenInfoElement.innerHTML = `通知權限被拒絕: ${permission}。請在瀏覽器設定中啟用通知權限。`;
+                return false;
+            }
+        } catch (error) {
+            log(`請求通知權限時出錯: ${error.message}`, 'error');
+            showStatus(`請求權限時出錯: ${error.message}`, true);
+            tokenInfoElement.innerHTML = `請求權限時出錯: ${error.message}`;
+            return false;
+        }
+    }
+
+    // 獲取推送令牌
+    async function getFCMToken() {
+        if (!messaging) {
+            log('Firebase Messaging 未初始化', 'error');
+            return null;
+        }
+
+        try {
+            log('正在獲取 FCM 令牌...', 'info');
+
+            // 使用 Service Worker 註冊
+            let swRegistration = null;
+
+            try {
+                // 嘗試使用相對路徑註冊 Service Worker
+                swRegistration = await navigator.serviceWorker.register('./firebase-messaging-sw.js');
+                log(`Service Worker 註冊成功，範圍: ${swRegistration.scope}`, 'info');
+            } catch (swError) {
+                log(`Service Worker 註冊失敗: ${swError.message}。嘗試獲取現有註冊...`, 'error');
+
+                // 如果註冊失敗，嘗試獲取現有註冊
+                const registrations = await navigator.serviceWorker.getRegistrations();
+                if (registrations.length > 0) {
+                    swRegistration = registrations[0];
+                    log(`使用現有 Service Worker 註冊: ${swRegistration.scope}`, 'info');
+                } else {
+                    log('未找到現有 Service Worker 註冊，後台通知可能無法工作', 'error');
+                }
+            }
+
+            // 獲取令牌
+            const tokenOptions = {
+                vapidKey: 'BDWMLXfdk_rydIrmpMaZjcxgUk-5S3goKUxrJ7Bvd-MSVg6ddt2va9_AOCwV8ip0Q8rem6400XLtGKqNQD2hkaw',
+                serviceWorkerRegistration: swRegistration
+            };
+
+            currentToken = await getToken(messaging, tokenOptions);
+
+            if (currentToken) {
+                log('FCM 令牌獲取成功', 'info');
+                showStatus('推送令牌獲取成功！');
+                tokenInfoElement.innerHTML = `<strong>推送令牌：</strong><br>${currentToken}`;
+                document.getElementById('targetToken').value = currentToken;
+                getTokenBtn.disabled = true;
+                deleteTokenBtn.disabled = false;
+                return currentToken;
+            } else {
+                log('未獲取到 FCM 令牌', 'error');
+                showStatus('未獲取到推送令牌。請檢查 Firebase 設定。', true);
+                tokenInfoElement.innerHTML = '未獲取到推送令牌。請檢查 Firebase 設定。';
+                return null;
+            }
+        } catch (error) {
+            log(`獲取 FCM 令牌時出錯: ${error.message}`, 'error');
+            showStatus(`獲取令牌時出錯: ${error.message}`, true);
+            tokenInfoElement.innerHTML = `獲取令牌時出錯: ${error.message}`;
+            return null;
+        }
+    }
+
+    // 刪除推送令牌
+    async function removeFCMToken() {
+        if (!messaging || !currentToken) {
+            log('無可刪除的令牌', 'error');
+            return false;
+        }
+
+        try {
+            log('正在刪除 FCM 令牌...', 'info');
+            await deleteToken(messaging, currentToken);
+            log('FCM 令牌刪除成功', 'info');
+            showStatus('推送令牌已成功刪除！');
+            currentToken = null;
+            tokenInfoElement.innerHTML = '令牌已刪除。您可以重新點擊「獲取推送令牌」按鈕獲取新令牌。';
+            document.getElementById('targetToken').value = '';
+            getTokenBtn.disabled = false;
+            deleteTokenBtn.disabled = true;
+            return true;
+        } catch (error) {
+            log(`刪除 FCM 令牌時出錯: ${error.message}`, 'error');
+            showStatus(`刪除令牌時出錯: ${error.message}`, true);
+            return false;
+        }
+    }
+
+    // 模擬發送消息
+    function simulateSendMessage() {
+        const title = document.getElementById('title').value;
+        const body = document.getElementById('body').value;
+        const targetToken = document.getElementById('targetToken').value;
+
+        if (!title || !body) {
+            showStatus('請輸入標題和內容', true);
+            return;
+        }
+
+        if (!targetToken) {
+            showStatus('請輸入目標令牌或獲取當前設備令牌', true);
+            return;
+        }
+
+        log(`模擬發送消息: "${title}" 到令牌: ${targetToken.substring(0, 10)}...`, 'info');
+
+        // 模擬接收到消息
+        const mockPayload = {
+            notification: {
+                title: title,
+                body: body
+            },
+            data: {
+                time: new Date().toISOString()
+            }
+        };
+
+        // 顯示消息（模擬）
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'notification';
+        messageDiv.innerHTML = `
+                <h4>${title} (模擬)</h4>
+                <p>${body}</p>
+                <small>模擬發送時間: ${new Date().toLocaleString()}</small>
+            `;
+        messagesElement.prepend(messageDiv);
+
+        showStatus('已模擬發送消息。注意：真實環境中需透過後端發送！');
+        log('已模擬發送消息', 'info');
+    }
+
+    // 事件監聽器
+    async function setupEventListeners() {
+        // 請求通知權限
+        requestPermissionBtn.addEventListener('click', requestNotificationPermission);
+
+        // 獲取 FCM 令牌
+        getTokenBtn.addEventListener('click', async () => {
+            if (Notification.permission !== 'granted') {
+                showStatus('請先獲取通知權限', true);
+                return;
+            }
+            await getFCMToken();
+        });
+
+        // 刪除 FCM 令牌
+        deleteTokenBtn.addEventListener('click', removeFCMToken);
+
+        // 模擬發送消息
+        sendMessageBtn.addEventListener('click', simulateSendMessage);
+    }
+
+    // 應用初始化
+    async function initializeFCM() {
+        log('應用初始化中...', 'info');
+
+        // 初始化 Firebase Messaging
+        if (await initializeMessaging()) {
+            // 設置事件監聽器
+            setupEventListeners();
+
+            // 檢查通知權限狀態
+            if (Notification.permission === 'granted') {
+                log('通知權限已預先獲取', 'info');
+                tokenInfoElement.innerHTML = '通知權限已獲取！您可以點擊「獲取推送令牌」按鈕。';
+                requestPermissionBtn.disabled = true;
+            }
+
+            log('應用初始化完成', 'info');
+        } else {
+            log('應用初始化失敗', 'error');
+        }
+    }
+
+    // 當頁面載入完成時初始化應用
+    window.addEventListener('load', initializeFCM);
+</script>
+</body>
+</html>
